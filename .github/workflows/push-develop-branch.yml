@@ -1,58 +1,72 @@
-# Unique name for this workflow
-name: Deploy integration branch to integration and staging/uat orgs
+name: Deploy PR Changes to Integration and Staging/UAT Orgs
 
-# Definition when the workflow should run
+# Trigger the workflow when a pull request is merged into the development branch
 on:
-    push:
-      branches: [ development ]
-      paths:
-        - 'force-app/**'
-            
+  pull_request:
+    types:
+      - closed
+    branches:
+      - development
+    paths:
+      - 'force-app/**'
 
 # Jobs to be executed
 jobs:
-    deploy-branch-to-int-and-staging-orgs:
-        runs-on: ubuntu-latest
-        if: ${{ github.actor != 'dependabot[bot]' }}
-        steps:
-            # Install Salesforce CLI
-            - name: 'Install Salesforce CLI'
-              run: |
-                  wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
-                  mkdir ~/sfdx
-                  tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
-                  echo "$HOME/sfdx/bin" >> $GITHUB_PATH
-                  ~/sfdx/bin/sfdx version
+  deploy-pr-changes:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.merged == true }} # Only run if the PR is merged
+    steps:
+      # Install Salesforce CLI
+      - name: 'Install Salesforce CLI'
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
+          mkdir ~/sfdx
+          tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
+          echo "$HOME/sfdx/bin" >> $GITHUB_PATH
+          ~/sfdx/bin/sfdx version
 
-            # install SFDX-Git-Delta plugin - https://github.com/scolladon/sfdx-git-delta
-            - name: 'Installing sfdx git delta'
-              run: | 
-                  echo y | sfdx plugins:install sfdx-git-delta
-                  sfdx plugins 
+      # Install SFDX-Git-Delta plugin
+      - name: 'Installing sfdx git delta'
+        run: |
+          echo y | sfdx plugins:install sfdx-git-delta
+          sfdx plugins
 
-            # Checkout the source code
-            - name: 'Checkout source code'
-              uses: actions/checkout@v3
-              with:
-                fetch-depth: 0
+      # Checkout the source code
+      - name: 'Checkout source code'
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Fetch the entire history to compare changes
 
-            # Store secret for both otgs
-            - name: 'Populate auth file with SFDX_URL secret of the integration and staging orgs'
-              shell: bash
-              run: |
-                  echo ${{ secrets.SFDX_INTEGRATION_URL}} > ./SFDX_INTEGRATION_URL.txt
+      # Store SFDX Auth URL for the integration org
+      - name: 'Populate auth file with SFDX_URL secret of the integration org'
+        shell: bash
+        run: |
+          echo ${{ secrets.SFDX_INTEGRATION_URL }} > ./SFDX_INTEGRATION_URL.txt
 
-            - name: 'Create delta packages for new, modified or deleted metadata'
-              run: | 
-                  mkdir changed-sources
-                  sfdx sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/
+      # Authenticate to the integration org
+      - name: 'Authenticate to Integration Org'
+        run: sfdx auth:sfdxurl:store -f ./SFDX_INTEGRATION_URL.txt -s -a integration
 
-            # Authenticate to org
-            - name: 'Authenticate to Integration Org'
-              run: sfdx auth:sfdxurl:store -f ./SFDX_INTEGRATION_URL.txt -s -a integration
+      # Identify changes introduced by the PR
+      - name: 'Create delta packages for new, modified, or deleted metadata'
+        run: |
+          mkdir -p changed-sources
+          sfdx sgd:source:delta --to "HEAD" --from "${{ github.event.pull_request.base.sha }}" --output changed-sources/ --generate-delta --source force-app/
 
-            - name: 'Deploy the entire branch to Integration org'
-              run: sfdx force:source:deploy -p force-app --testlevel RunLocalTests --json
+      # Deploy the delta changes to the integration org
+      - name: 'Deploy delta changes to Integration org'
+        run: |
+          if [ -d "changed-sources/force-app" ]; then
+            sfdx force:source:deploy -p changed-sources/force-app --testlevel RunLocalTests --json
+          else
+            echo "No changes to deploy."
+          fi
 
-            - name: 'Deploy destructive changes (if any) to Integration org'
-              run: sfdx force:mdapi:deploy -d "changed-sources/destructiveChanges" --checkonly --ignorewarnings 
+      # Deploy destructive changes (if any) to the integration org
+      - name: 'Deploy destructive changes (if any) to Integration org'
+        run: |
+          if [ -d "changed-sources/destructiveChanges" ]; then
+            sfdx force:mdapi:deploy -d "changed-sources/destructiveChanges" --checkonly --ignorewarnings
+          else
+            echo "No destructive changes to deploy."
+          fi
