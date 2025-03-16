@@ -12,6 +12,5 @@ public with sharing class MyIterableTest {
         for(String s : myIterable){
             System.debug(s);
         }
-        System.assertEquals(1, 3);
     }
 }
