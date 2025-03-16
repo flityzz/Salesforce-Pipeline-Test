@@ -1,4 +1,4 @@
-name: Deploy PR Changes to Integration and Staging/UAT Orgs
+name: Deploy PR Changes to Production Org
 
 # Trigger the workflow when a pull request is merged into the master branch
 on:
